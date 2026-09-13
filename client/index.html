@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Inkfall</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="mast">
+      <div class="brand">
+        <p class="kicker" id="phase-label">Connecting</p>
+        <h1>INK<em>FALL</em></h1>
+      </div>
+      <div class="room">
+        <span class="room-label">Room</span>
+        <button class="room-code" id="room-code" title="Copy invite link">----</button>
+        <span class="ping" id="ping">— ms</span>
+      </div>
+    </header>
+
+    <div class="stage" id="stage">
+      <canvas id="canvas" width="960" height="520" aria-label="Inkfall arena"></canvas>
+
+      <div class="hud">
+        <div class="objective">
+          <span id="role-label">Waiting</span>
+          <b id="objective">Join a room to begin</b>
+        </div>
+        <div class="tally">
+          <div class="t-out"><span>Escaped</span><b id="n-out">0</b></div>
+          <div class="t-down"><span>Down</span><b id="n-down">0</b></div>
+          <div class="t-clock"><span>Clock</span><b id="n-clock">--</b></div>
+        </div>
+      </div>
+
+      <div class="overlay" id="overlay">
+        <div class="panel" id="panel"></div>
+      </div>
+
+      <div class="toasts" id="toasts"></div>
+    </div>
+
+    <div class="bar">
+      <div class="rail" id="rail" hidden>
+        <button class="tool" id="t-ink" aria-pressed="true"><span class="swatch"></span>Platform <kbd>1</kbd></button>
+        <button class="tool" id="t-spike" aria-pressed="false"><span class="swatch"></span>Spike <kbd>2</kbd></button>
+        <button class="tool" id="t-erase" aria-pressed="false"><span class="swatch"></span>Erase <kbd>3</kbd></button>
+        <div class="ink">
+          <span class="ink-label">Ink</span>
+          <div class="ink-track"><div class="ink-fill" id="ink-fill"></div></div>
+          <span class="ink-num" id="ink-num">1100</span>
+        </div>
+      </div>
+
+      <div class="rail hint" id="hint" hidden>
+        <span><kbd>A</kbd><kbd>D</kbd> or arrows to move · <kbd>Space</kbd> to jump · watch the pen</span>
+      </div>
+
+      <ol class="roster" id="roster"></ol>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
