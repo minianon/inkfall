@@ -20,6 +20,10 @@ const MAX_INPUT_BACKLOG = 8;
 const RESYNC_EVERY_TICKS = TICK_HZ * 5;
 /** Silence longer than this means the player is gone from the keyboard, not holding a key. */
 const INPUT_IDLE_TICKS = 10;
+/** A dropped player keeps their seat, name and score this long before the room forgets them. */
+const RECONNECT_GRACE_TICKS = TICK_HZ * 45;
+/** If the drawer is gone this long mid-round, the round can't continue. */
+const DRAWER_ABANDON_TICKS = TICK_HZ * 4;
 
 interface Player {
   id: string;
@@ -36,6 +40,8 @@ interface Player {
   lastSeq: number;
   /** Ticks since an input actually arrived. */
   idleTicks: number;
+  /** Tick they dropped at, or -1 while connected. */
+  goneAt: number;
 }
 
 export class Room {
@@ -72,6 +78,22 @@ export class Room {
 
   // ------------------------------------------------------------- membership
   join(id: string, name: string, ws: WebSocket): boolean {
+    const returning = this.players.get(id);
+    if (returning) {
+      // Same person, same seat: their score, colour and place in the rotation survive.
+      returning.ws = ws;
+      returning.connected = true;
+      returning.goneAt = -1;
+      returning.name = name.slice(0, 14) || returning.name;
+      if (returning.runner.status === "down") respawn(returning.runner);
+      this.send(returning, { t: "welcome", you: id, room: this.code, tickHz: TICK_HZ });
+      this.send(returning, { t: "board", strokes: this.board.snapshot(), inkUsed: this.board.inkUsed });
+      this.sendPhase(returning);
+      this.broadcastLobby();
+      this.broadcast({ t: "toast", text: `${returning.name} reconnected` });
+      return true;
+    }
+
     if (this.isFull) return false;
 
     const taken = new Set([...this.players.values()].map((p) => p.colour));
@@ -85,6 +107,7 @@ export class Room {
       lastInput: { seq: 0, left: false, right: false, jump: false },
       lastSeq: 0,
       idleTicks: 0,
+      goneAt: -1,
     };
     this.players.set(id, player);
 
@@ -96,23 +119,57 @@ export class Room {
     return true;
   }
 
+  /** A dropped socket, not a departure — they have `RECONNECT_GRACE_TICKS` to come back. */
   leave(id: string): void {
     const player = this.players.get(id);
-    if (!player) return;
-    this.players.delete(id);
-    this.order = this.order.filter((o) => o !== id);
-    this.broadcast({ t: "toast", text: `${player.name} left` });
+    if (!player || !player.connected) return;
 
-    // The pen can't be held by someone who isn't here.
-    if (this.drawerId === id && (this.phase === "prep" || this.phase === "round")) {
-      this.endRound(true);
+    player.connected = false;
+    player.ws = null;
+    player.goneAt = this.tick;
+    player.queue.length = 0;
+    player.lastInput = NEUTRAL_INPUT;
+    // Take them off the board rather than leaving a statue for the drawer to farm.
+    player.runner.status = "down";
+    player.runner.respawnIn = 0;
+
+    this.broadcast({ t: "toast", text: `${player.name} dropped` });
+    this.broadcastLobby();
+
+    if (this.connectedCount === 0) this.onEmpty();
+  }
+
+  private get connectedCount(): number {
+    let n = 0;
+    for (const p of this.players.values()) if (p.connected) n++;
+    return n;
+  }
+
+  /** Forget players who never came back, and end a round whose drawer is gone. */
+  private reapAbsent(): void {
+    for (const [id, p] of [...this.players]) {
+      if (p.connected) continue;
+      const gone = this.tick - p.goneAt;
+
+      if (id === this.drawerId && gone > DRAWER_ABANDON_TICKS &&
+          (this.phase === "prep" || this.phase === "round")) {
+        this.broadcast({ t: "toast", text: `${p.name} left with the pen`, tone: "warn" });
+        this.endRound(true);
+      }
+
+      if (gone > RECONNECT_GRACE_TICKS) {
+        this.players.delete(id);
+        this.order = this.order.filter((o) => o !== id);
+        this.broadcast({ t: "toast", text: `${p.name} left` });
+        this.broadcastLobby();
+      }
     }
     if (this.players.size === 0) this.onEmpty();
-    else this.broadcastLobby();
   }
 
   private get hostId(): string | null {
-    return this.players.keys().next().value ?? null;
+    for (const [id, p] of this.players) if (p.connected) return id;
+    return null;
   }
 
   // ------------------------------------------------------------- messages in
@@ -127,7 +184,7 @@ export class Room {
 
       case "start":
         if (id === this.hostId && (this.phase === "lobby" || this.phase === "final")) {
-          if (this.players.size < MIN_PLAYERS) {
+          if (this.connectedCount < MIN_PLAYERS) {
             this.send(player, { t: "toast", text: `Need ${MIN_PLAYERS} players to start`, tone: "warn" });
             return;
           }
@@ -276,16 +333,19 @@ export class Room {
   // ------------------------------------------------------------- simulation
   step(): void {
     this.tick++;
+    this.reapAbsent();
+    if (this.players.size === 0) return;
 
     const now = Date.now();
     const expired = now >= this.phaseEndsAt;
 
     if (this.phase === "round") {
       this.simulate();
-      const live = this.activeRunners();
+      const live = this.activeRunners().filter((p) => p.connected);
       const allOut = live.length > 0 && live.every((p) => p.runner.status === "out");
       if (expired || allOut) this.endRound(false);
     } else if (this.phase === "prep" && expired) {
+      if (this.board.strokes.length === 0) this.layStarterBridge();
       this.setPhase("round", ROUND_SECONDS);
     } else if (this.phase === "intermission" && expired) {
       this.nextRound();
@@ -307,6 +367,24 @@ export class Room {
     }
   }
 
+  /**
+   * An idle or absent drawer would otherwise hand everyone 45 seconds of empty
+   * pit. Lay a plain, crossable span so the round is at least a round — they
+   * keep the leftover ink and can still ruin it.
+   */
+  private layStarterBridge(): void {
+    const span = (pts: [number, number][]) => {
+      this.board.begin("ink", pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) this.board.extend(pts[i][0], pts[i][1]);
+      this.board.end();
+    };
+    span([[128, 366], [240, 372], [340, 374], [430, 370]]);
+    span([[505, 358], [620, 360], [730, 358], [828, 362]]);
+
+    this.broadcast({ t: "board", strokes: this.board.snapshot(), inkUsed: this.board.inkUsed });
+    this.broadcast({ t: "toast", text: "Nothing was drawn — a plain bridge was laid" });
+  }
+
   private activeRunners(): Player[] {
     return [...this.players.values()].filter((p) => p.id !== this.drawerId);
   }
@@ -315,6 +393,8 @@ export class Room {
     const drawer = this.drawerId ? this.players.get(this.drawerId) : null;
 
     for (const player of this.activeRunners()) {
+      if (!player.connected) continue;
+
       // Consume one buffered input per tick, catching up by at most one extra.
       let frame = player.queue.shift();
       if (player.queue.length > 3) {

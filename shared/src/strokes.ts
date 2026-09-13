@@ -55,7 +55,9 @@ export class InkBoard {
   begin(kind: StrokeKind, x: number, y: number, forceId?: number): Stroke | null {
     this.open = null;
     const p = this.sanitise(x, y);
-    const refusal = this.refuse(kind, p, 0);
+    // Needs enough ink for at least one drawable step, so starting a stroke you
+    // cannot draw tells you why instead of leaving a dot that vanishes.
+    const refusal = this.refuse(kind, p, MIN_POINT_GAP);
     if (refusal) {
       this.lastRefusal = refusal;
       return null;
@@ -74,10 +76,25 @@ export class InkBoard {
     if (!open) return null;
     this.open = open;
 
-    const p = this.sanitise(x, y);
+    let p = this.sanitise(x, y);
     const last = open.pts[open.pts.length - 1];
-    const step = dist(last.x, last.y, p.x, p.y);
+    let step = dist(last.x, last.y, p.x, p.y);
     if (step < MIN_POINT_GAP) return null;
+
+    // Run dry exactly where the budget ends, rather than refusing the whole
+    // move and stranding ink the bar still shows.
+    const cost = costOf(open.kind);
+    const affordable = this.inkLeft / cost;
+    if (step > affordable) {
+      if (affordable < MIN_POINT_GAP) {
+        this.lastRefusal = "ink";
+        this.open = null;
+        return null;
+      }
+      const u = affordable / step;
+      p = this.sanitise(last.x + (p.x - last.x) * u, last.y + (p.y - last.y) * u);
+      step = dist(last.x, last.y, p.x, p.y);
+    }
 
     const refusal = this.refuse(open.kind, p, step);
     if (refusal) {
@@ -87,7 +104,7 @@ export class InkBoard {
     }
 
     open.pts.push(p);
-    this.inkUsed += step * costOf(open.kind);
+    this.inkUsed += step * cost;
     this.rebuild();
     return p;
   }
@@ -115,7 +132,10 @@ export class InkBoard {
       const pieces: Vec[][] = [];
       let touched = false;
 
-      for (const p of s.pts) {
+      // A fast drag leaves points far apart. Erase works on points, so without
+      // this a hole could not open in the middle of a long straight run — which
+      // is precisely where the floor needs to vanish from under someone.
+      for (const p of densify(s.pts, ERASE_R * 0.6)) {
         if (dist(p.x, p.y, x, y) < ERASE_R) {
           touched = true;
           if (run.length > 1) pieces.push(run);
@@ -127,7 +147,7 @@ export class InkBoard {
       if (run.length > 1) pieces.push(run);
 
       if (!touched) {
-        next.push(s);
+        next.push(s); // Untouched strokes keep their original points.
         continue;
       }
       changed = true;
@@ -196,4 +216,25 @@ export class InkBoard {
 
 export function costOf(kind: StrokeKind): number {
   return kind === "spike" ? COST_SPIKE : COST_INK;
+}
+
+/**
+ * Insert collinear points so no two are further apart than `maxGap`. Length —
+ * and therefore ink cost — is unchanged, and it is deterministic, so every
+ * client that applies the same erase gets the same board.
+ */
+function densify(pts: readonly Vec[], maxGap: number): Vec[] {
+  const out: Vec[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    out.push(a);
+    const b = pts[i + 1];
+    if (!b) break;
+    const steps = Math.floor(dist(a.x, a.y, b.x, b.y) / maxGap);
+    for (let k = 1; k <= steps; k++) {
+      const u = k / (steps + 1);
+      out.push({ x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u });
+    }
+  }
+  return out;
 }

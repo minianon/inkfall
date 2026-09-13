@@ -237,3 +237,43 @@ kbd {
   .tally div b { font-size: 15px; }
   .roster { flex-basis: 100%; }
 }
+
+/* ---------- mute ---------- */
+.mute {
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  letter-spacing: .14em; padding: 5px 9px;
+  color: var(--ink); background: transparent;
+  border: 1px solid var(--edge); border-radius: 3px;
+}
+.mute:hover { border-color: var(--ink); }
+.mute[aria-pressed="true"] { color: var(--dim); border-color: var(--edge); text-decoration: line-through; }
+
+/* ---------- touch controls ---------- */
+/* Sized for thumbs at the bottom corners, clear of the pit and the exit door. */
+.touch {
+  position: absolute; inset: auto 0 0 0;
+  display: flex; justify-content: space-between; align-items: flex-end;
+  padding: 10px 12px; gap: 10px;
+  pointer-events: none;
+}
+.touch[hidden] { display: none; }
+.tbtn {
+  pointer-events: auto;
+  width: 64px; height: 64px;
+  font-family: var(--mono); font-size: 20px; font-weight: 600; letter-spacing: 0;
+  color: var(--chalk); background: rgba(17, 25, 36, .72);
+  border: 1px solid var(--edge); border-radius: 50%;
+  display: grid; place-items: center;
+  touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.tbtn:active, .tbtn.held { background: rgba(68, 229, 198, .3); border-color: var(--ink); }
+.tbtn.jump { font-size: 11px; letter-spacing: .1em; width: 78px; height: 78px; }
+.touch .pair { display: flex; gap: 10px; pointer-events: none; }
+
+@media (max-width: 480px) {
+  .tbtn { width: 56px; height: 56px; }
+  .tbtn.jump { width: 68px; height: 68px; }
+}
+
+/* A dropped player keeps their seat for 45s — show the seat, greyed. */
+.roster li.gone { opacity: .4; border-style: dashed; }

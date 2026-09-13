@@ -83,8 +83,14 @@ const wss = new WebSocketServer({ server: http, path: "/ws" });
 
 let nextId = 1;
 
+/** Client-supplied ids are namespaced and length-capped before they are trusted. */
+function identify(pid: string | undefined): string {
+  const clean = (pid ?? "").replace(/[^a-z0-9]/gi, "").slice(0, 24);
+  return clean ? `u_${clean}` : `p${nextId++}`;
+}
+
 wss.on("connection", (ws: WebSocket) => {
-  const id = `p${nextId++}`;
+  let id = "";
   let room: Room | null = null;
   let alive = true;
 
@@ -94,6 +100,7 @@ wss.on("connection", (ws: WebSocket) => {
 
     if (msg.t === "join") {
       if (room) return;
+      id = identify(msg.pid);
       room = getRoom(msg.room ?? "");
       if (!room.join(id, msg.name ?? "runner", ws)) {
         ws.send(JSON.stringify({ t: "toast", text: "That room is full", tone: "warn" }));

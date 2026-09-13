@@ -6,6 +6,7 @@ import {
   createRunner, respawn, stepRunner, type InputFrame, type RunnerState,
 } from "../../shared/src/runner";
 import { InkBoard } from "../../shared/src/strokes";
+import { Sfx } from "./audio";
 import { Input } from "./input";
 import { Net } from "./net";
 import { Renderer, type RenderRunner, type RenderView } from "./render";
@@ -37,6 +38,8 @@ const nOut = $<HTMLElement>("n-out");
 const nDown = $<HTMLElement>("n-down");
 const nClock = $<HTMLElement>("n-clock");
 const clockBox = document.querySelector(".t-clock") as HTMLElement;
+const touchPad = $<HTMLDivElement>("touch");
+const muteBtn = $<HTMLButtonElement>("mute");
 
 const toolButtons: Record<Tool, HTMLButtonElement> = {
   ink: $<HTMLButtonElement>("t-ink"),
@@ -48,6 +51,7 @@ const toolButtons: Record<Tool, HTMLButtonElement> = {
 const board = new InkBoard();
 const renderer = new Renderer(canvas);
 const net = new Net();
+const sfx = new Sfx();
 
 let you = "";
 let joined = false;
@@ -63,6 +67,7 @@ let lastScores: { rows: ScoreRow[]; escaped: number; downed: number; wipe: boole
 
 let escaped = 0;
 let downed = 0;
+let lastBeep = -1;
 
 /** Locally predicted copy of your own runner. */
 let local: RunnerState = createRunner();
@@ -97,6 +102,10 @@ const input = new Input(canvas, {
     }
     if (board.begin(input.tool, x, y)) {
       net.send({ t: "pen", op: "begin", kind: input.tool, x, y });
+      if (input.tool === "spike") sfx.spikeTick();
+      else sfx.penTick();
+    } else {
+      sfx.outOfInk();
     }
     paintInk();
   },
@@ -108,7 +117,11 @@ const input = new Input(canvas, {
       return;
     }
     const p = board.extend(x, y);
-    if (p) net.send({ t: "pen", op: "point", x: p.x, y: p.y });
+    if (p) {
+      net.send({ t: "pen", op: "point", x: p.x, y: p.y });
+      if (input.tool === "spike") sfx.spikeTick();
+      else sfx.penTick();
+    }
     paintInk();
   },
   onUp() {
@@ -127,6 +140,7 @@ function applyErase(x: number, y: number, force: boolean): void {
   lastEraseY = y;
   board.erase(x, y);
   net.send({ t: "pen", op: "erase", x, y });
+  sfx.erase();
   paintInk();
 }
 
@@ -138,6 +152,13 @@ input.onToolChange = (tool) => {
 for (const [name, btn] of Object.entries(toolButtons)) {
   btn.addEventListener("click", () => input.setTool(name as Tool));
 }
+
+muteBtn.setAttribute("aria-pressed", String(sfx.muted));
+muteBtn.addEventListener("click", () => {
+  const muted = sfx.toggleMute();
+  muteBtn.setAttribute("aria-pressed", String(muted));
+  if (!muted) sfx.unlock();
+});
 
 roomCode.addEventListener("click", async () => {
   const url = `${location.origin}/#${roomCode.textContent?.trim() ?? ""}`;
@@ -189,6 +210,7 @@ net.onMessage = (msg: ServerMsg) => {
         respawn(local);
         pending.length = 0;
       }
+      if (changed && phase === "round") sfx.roundStart();
       input.canDraw = youAreDrawer() && (phase === "prep" || phase === "round");
       canvas.classList.toggle("drawing", input.canDraw);
       paintChrome();
@@ -217,7 +239,11 @@ net.onMessage = (msg: ServerMsg) => {
       break;
 
     case "penErase":
-      if (!youAreDrawer()) board.erase(msg.x, msg.y);
+      // A runner hears the floor going before they can see it. That is the warning.
+      if (!youAreDrawer()) {
+        board.erase(msg.x, msg.y);
+        sfx.erase();
+      }
       paintInk();
       break;
 
@@ -236,10 +262,13 @@ net.onMessage = (msg: ServerMsg) => {
         downed++;
         renderer.burst(msg.x, msg.y, colour, 18);
         renderer.pop(msg.x, msg.y - 20, "+100", "#FF4D6D");
+        if (msg.id === you) (msg.cause === "spike" ? sfx.spike() : sfx.pit());
+        else sfx.drop();
       } else {
         escaped++;
         renderer.burst(msg.x, msg.y, "#FFC14D", 20);
         renderer.pop(msg.x, msg.y - 24, "OUT", "#FFC14D");
+        sfx.escape();
       }
       paintChrome();
       break;
@@ -247,6 +276,7 @@ net.onMessage = (msg: ServerMsg) => {
 
     case "scores":
       lastScores = { rows: msg.rows, escaped: msg.escaped, downed: msg.downed, wipe: msg.wipe };
+      sfx.roundEnd(msg.wipe);
       for (const row of msg.rows) {
         const p = players.get(row.id);
         if (p) p.score = row.score;
@@ -367,7 +397,10 @@ function tick(): void {
 
   if (!localStalled) {
     // The server decides who dies; prediction just stops guessing at that point.
+    const wasGrounded = local.onGround;
     const event = stepRunner(local, f, board.segs);
+    if (wasGrounded && !local.onGround && local.vy < 0) sfx.jump();
+    else if (!wasGrounded && local.onGround) sfx.land();
     if (event) localStalled = true;
   }
 }
@@ -425,8 +458,10 @@ function paintChrome(): void {
   nDown.textContent = String(downed);
 
   const drawing = youAreDrawer();
-  rail.hidden = !drawing || (phase !== "prep" && phase !== "round");
-  hint.hidden = drawing || (phase !== "prep" && phase !== "round");
+  const playing = phase === "prep" || phase === "round";
+  rail.hidden = !drawing || !playing;
+  hint.hidden = drawing || !playing || Input.isTouch;
+  touchPad.hidden = drawing || !playing || !Input.isTouch;
 
   if (phase === "lobby") phaseLabel.textContent = "Lobby";
   else if (phase === "final") phaseLabel.textContent = "Match over";
@@ -456,8 +491,15 @@ function paintClock(now: number): void {
     return;
   }
   const left = Math.max(0, (phaseEndsAt - now) / 1000);
-  nClock.textContent = String(Math.ceil(left));
+  const secs = Math.ceil(left);
+  nClock.textContent = String(secs);
   clockBox.classList.toggle("urgent", phase === "round" && left <= 10);
+
+  // One beep per second over the last five, in both prep and the round proper.
+  if (secs !== lastBeep) {
+    if ((phase === "round" || phase === "prep") && secs > 0 && secs <= 5) sfx.countdown();
+    lastBeep = secs;
+  }
 }
 
 function paintRoster(): void {
@@ -467,6 +509,7 @@ function paintRoster(): void {
     const li = document.createElement("li");
     if (p.id === drawerId) li.classList.add("drawer");
     if (p.id === you) li.classList.add("you");
+    if (!p.connected) li.classList.add("gone");
     li.innerHTML = `
       <span class="dot" style="background:${p.colour}"></span>
       <span class="nm">${escapeHtml(p.name)}${p.id === drawerId ? ' <span class="pen">PEN</span>' : ""}</span>
@@ -500,9 +543,10 @@ function renderJoin(): void {
   const nameEl = $<HTMLInputElement>("f-name");
   const codeEl = $<HTMLInputElement>("f-code");
   const go = () => {
+    sfx.unlock(); // Browsers only allow audio to start from a real gesture.
     const name = nameEl.value.trim() || "runner";
     localStorage.setItem("inkfall:name", name);
-    net.connect(codeEl.value.trim().toUpperCase(), name);
+    net.connect(codeEl.value.trim().toUpperCase(), name, persistentId());
     $<HTMLButtonElement>("f-go").disabled = true;
   };
   $<HTMLButtonElement>("f-go").addEventListener("click", go);
@@ -583,6 +627,20 @@ function toast(text: string, tone?: "info" | "warn"): void {
   while (toasts.children.length > 4) toasts.firstChild?.remove();
 }
 
+/**
+ * Stable across reloads and dropped sockets so a reconnect lands back in your
+ * own seat — but deliberately per-tab. In localStorage a second tab would share
+ * the id and take over the first tab's player.
+ */
+function persistentId(): string {
+  let id = sessionStorage.getItem("inkfall:pid");
+  if (!id) {
+    id = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    sessionStorage.setItem("inkfall:pid", id);
+  }
+  return id;
+}
+
 function savedName(): string {
   return localStorage.getItem("inkfall:name") ?? "";
 }
@@ -593,6 +651,19 @@ function escapeHtml(s: string): string {
 }
 
 // ------------------------------------------------------------------ boot
+// A read-only handle for poking at live state from the console during testing.
+(window as unknown as Record<string, unknown>).inkfall = {
+  get state() {
+    return { you, joined, phase, drawerId, seq, pending: pending.length, localStalled };
+  },
+  get input() {
+    return { left: input.left, right: input.right, jump: input.jump, tool: input.tool };
+  },
+  get local() {
+    return { ...local };
+  },
+};
+
 paintInk();
 paintChrome();
 renderJoin();

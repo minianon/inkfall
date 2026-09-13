@@ -14,11 +14,13 @@ export class Net {
   private pingTimer: number | null = null;
   private room = "";
   private name = "";
+  private pid = "";
   private closedByUs = false;
 
-  connect(room: string, name: string): void {
+  connect(room: string, name: string, pid: string): void {
     this.room = room;
     this.name = name;
+    this.pid = pid;
     this.closedByUs = false;
     this.open();
   }
@@ -43,7 +45,7 @@ export class Net {
       this.onStatus(true);
       // The room we were given may have been assigned by the server last time;
       // reuse it so a reconnect lands us back with the same people.
-      this.send({ t: "join", room: this.room, name: this.name });
+      this.send({ t: "join", room: this.room, name: this.name, pid: this.pid });
       this.pingTimer = window.setInterval(() => this.send({ t: "ping", ts: performance.now() }), 2000);
     });
 

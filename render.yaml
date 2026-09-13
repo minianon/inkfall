@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: inkfall
+    runtime: node
+    plan: free
+    # Pick the region nearest your players — for a game, latency is the product.
+    region: oregon
+    buildCommand: npm install && npm run build
+    # Render injects PORT; the server reads GAME_PORT so a dev harness setting
+    # PORT to the client's port can never collide with it.
+    startCommand: GAME_PORT=$PORT npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"

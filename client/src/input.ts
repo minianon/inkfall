@@ -36,6 +36,30 @@ export class Input {
       this.onPointerUp();
     });
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+    this.bindTouch("t-left", "left");
+    this.bindTouch("t-right", "right");
+    this.bindTouch("t-jump", "jump");
+  }
+
+  /** Whether this device wants on-screen controls at all. */
+  static get isTouch(): boolean {
+    return matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
+  }
+
+  private bindTouch(id: string, key: "left" | "right" | "jump"): void {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const set = (down: boolean) => (e: PointerEvent) => {
+      e.preventDefault();
+      this[key] = down;
+      el.classList.toggle("held", down);
+    };
+    el.addEventListener("pointerdown", set(true));
+    // Up, cancel and leave all have to release, or a finger that slides off sticks.
+    for (const ev of ["pointerup", "pointercancel", "pointerleave"]) {
+      el.addEventListener(ev, set(false) as EventListener);
+    }
   }
 
   setTool(tool: Tool): void {

@@ -39,7 +39,7 @@ export interface ScoreRow {
 
 // ---------------------------------------------------------------- client → server
 export type ClientMsg =
-  | { t: "join"; room: string; name: string }
+  | { t: "join"; room: string; name: string; pid?: string }
   | { t: "input"; seq: number; l: 0 | 1; r: 0 | 1; j: 0 | 1 }
   | { t: "pen"; op: "begin"; kind: StrokeKind; x: number; y: number }
   | { t: "pen"; op: "point"; x: number; y: number }
