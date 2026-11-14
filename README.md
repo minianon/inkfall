@@ -135,3 +135,11 @@ can see it. That cue is gameplay, not polish.
 - **Accounts, cosmetics, persistence.** Nothing is stored; a room dies when it empties.
 - **Something for the drawer to watch.** They sit out their own round, which is correct,
   but the screen could give them more than the pen.
+
+## Design docs
+
+| Doc | What's inside |
+|---|---|
+| [High-Level Design](docs/hld.md) | Architecture, components, data flow, tech choices, deployment |
+| [Low-Level Design](docs/lld.md) | Modules, data models, APIs and functions, key sequences |
+
